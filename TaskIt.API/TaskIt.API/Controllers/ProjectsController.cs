@@ -1,6 +1,9 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using AutoMapper;
+using Azure.Core;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using System;
 using System.Linq.Dynamic.Core;
 using System.Text.Json;
 using TaskIt.API.DTO;
@@ -14,14 +17,17 @@ namespace TaskIt.API.Controllers;
 public class ProjectsController : ControllerBase
 {
     private readonly ILogger<ProjectsController> _logger;
+    private readonly IMapper _mapper;
     private readonly IMemoryCache _memoryCache;
     private readonly ApplicationDbContext _context;
 
     public ProjectsController(ILogger<ProjectsController> logger,
-                             IMemoryCache memoryCache,
-                             ApplicationDbContext context)
+                              IMapper mapper,
+                              IMemoryCache memoryCache,
+                              ApplicationDbContext context)
     {
         _logger = logger;
+        _mapper = mapper;
         _memoryCache = memoryCache;
         _context = context;
     }
@@ -109,33 +115,34 @@ public class ProjectsController : ControllerBase
         {
             // If the key is not found, query the db and store the result in the cache for 30 seconds.
             result = await _context.Projects
-                                      .Select(p => new ProjectDTO()
-                                      {
-                                          Id = p.Id,
-                                          Name = p.Name,
-                                          Description = p.Description,
-                                          Archived = p.Archived,
-                                          Flagged = p.Flagged,
-                                          Status = p.Status,
-                                          Priority = p.Priority,
-                                          GoalDate = p.GoalDate,
-                                          DateClosed = p.DateClosed,
-                                          DateCreated = p.DateCreated,
-                                          Tickets = p.Tickets!.Select(t => new ProjectTicketsDTO() 
-                                          { 
-                                              Id = t.Id, 
-                                              Title = t.Title, 
-                                              DateCreated = t.DateCreated,
-                                              GoalDate = t.GoalDate, 
-                                              Priority = t.Priority 
-                                          }),
-                                          Notes = p.Notes!.Select(n => new ProjectNotesDTO() 
-                                          { 
-                                              Id = n.Id, 
-                                              Title = n.Title,
-                                              Content = n.Content
-                                          })
-                                      }).SingleOrDefaultAsync(p => p.Id == id);
+                                   .Select(p => new ProjectDTO()
+                                   {
+                                       Id = p.Id,
+                                       Name = p.Name,
+                                       Description = p.Description,
+                                       Archived = p.Archived,
+                                       Flagged = p.Flagged,
+                                       Status = p.Status,
+                                       Priority = p.Priority,
+                                       GoalDate = p.GoalDate,
+                                       DateClosed = p.DateClosed,
+                                       DateCreated = p.DateCreated,
+                                       Tickets = p.Tickets!.Select(t => new ProjectTicketsDTO()
+                                       {
+                                           Id = t.Id,
+                                           Title = t.Title,
+                                           DateCreated = t.DateCreated,
+                                           GoalDate = t.GoalDate,
+                                           Priority = t.Priority
+                                       }),
+                                       Notes = p.Notes!.Select(n => new ProjectNotesDTO()
+                                       {
+                                           Id = n.Id,
+                                           Title = n.Title,
+                                           Content = n.Content
+                                       })
+                                   }).SingleOrDefaultAsync(p => p.Id == id);
+
 
             if (result is null) return NotFound();
 
@@ -180,17 +187,10 @@ public class ProjectsController : ControllerBase
 
         // If it doesn't, create a new project and update the db.
         var newProject = new Project();
-
-        if (!string.IsNullOrEmpty(model.Name))
-            newProject.Name = model.Name;
-        if (!string.IsNullOrEmpty(model.Description))
-            newProject.Description = model.Description;
-        if (model.GoalDate.HasValue)
-            newProject.GoalDate = model.GoalDate.Value;
-        newProject.Status = model.Status;
-        newProject.Priority = model.Priority;
+        newProject = _mapper.Map<Project>(model);
         newProject.Archived = false;
         newProject.Flagged = false;
+        newProject.Status = Core.Enums.Status.UNASSIGNED;
         newProject.DateCreated = DateTime.Now;
         newProject.LastModified = DateTime.Now;
 
@@ -203,9 +203,11 @@ public class ProjectsController : ControllerBase
             return StatusCode(500, ModelState);
         }
 
-        var response = new ApiResultDTO<Project?>()
+        var newProjectDTO = _mapper.Map<ProjectDTO>(newProject);
+
+        var response = new ApiResultDTO<ProjectDTO?>()
         {
-            Data = newProject,
+            Data = newProjectDTO,
             Links = new List<LinkDTO>()
                 {
                     new LinkDTO(Url.Action(null, "Projects", model, Request.Scheme)!, "self", "POST")
@@ -389,4 +391,50 @@ public class ProjectsController : ControllerBase
 //                new LinkDTO(Url.Action(null, "Projects", new { input.PageIndex, input.PageSize } , Request.Scheme)!, "self", "GET")
 //            }
 //    };
+//}
+
+
+
+
+
+// From project create
+//
+//public async Task<IActionResult> Update([FromBody] ProjectUpdateDTO model)
+//{
+//    if (!ModelState.IsValid) return BadRequest(ModelState);
+
+//    // Make sure the project being updated exists.
+//    var projectToUpdate = await _context.Projects.Where(p => p.Id == model.Id).FirstOrDefaultAsync();
+//    if (projectToUpdate is null)
+//    {
+//        ModelState.AddModelError("", $"Project with Id {model.Id} was not found.");
+//        return StatusCode(404, ModelState);
+//    }
+
+//    // If it does, update the properties and save the changes.
+//    projectToUpdate = _mapper.Map<Project>(model);
+//    projectToUpdate.LastModified = DateTime.Now;
+
+//    _context.Projects.Update(projectToUpdate);
+//    var result = await _context.SaveChangesAsync() > 0;
+
+//    if (!result)
+//    {
+//        ModelState.AddModelError("", "Something went wrong when attempting to update this project.");
+//        return StatusCode(500, ModelState);
+//    }
+
+//    var projectDTO = _mapper.Map<ProjectDTO>(projectToUpdate);
+
+//    var response = new ApiResultDTO<ProjectDTO?>()
+//    {
+//        Data = projectDTO,
+//        Links = new List<LinkDTO>()
+//        {
+//                new LinkDTO(Url.Action(null, "Projects", model, Request.Scheme)!, "self", "PUT")
+//            },
+//        Message = "Project successfully updated."
+//    };
+
+//    return Ok(response);
 //}

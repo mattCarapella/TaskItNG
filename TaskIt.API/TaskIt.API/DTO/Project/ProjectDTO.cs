@@ -32,6 +32,6 @@ public record ProjectDTO
 
     public IEnumerable<ProjectNotesDTO>? Notes { get; set; }
 
-    public int? TicketCount { get; set; }
+    public int? TicketCount { get; set; } = 0;
 
 }

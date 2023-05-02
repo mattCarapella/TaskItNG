@@ -44,6 +44,8 @@ builder.Services.AddEndpointsApiExplorer();
 
 builder.Services.AddSwaggerGen();
 
+builder.Services.AddAutoMapper(typeof(Program).Assembly);
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(cfg => {
