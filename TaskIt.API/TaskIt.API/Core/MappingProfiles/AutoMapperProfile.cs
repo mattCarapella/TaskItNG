@@ -1,4 +1,5 @@
 ﻿using AutoMapper;
+using TaskIt.API.DTO.Account;
 using TaskIt.API.DTO.Project;
 using TaskIt.API.Models;
 
@@ -11,5 +12,9 @@ public class AutoMapperProfile : Profile
         CreateMap<Project, ProjectDTO>().ReverseMap();
         CreateMap<Project, ProjectCreateDTO>().ReverseMap();
         CreateMap<Project, ProjectUpdateDTO>().ReverseMap();
+    
+        CreateMap<ApiUser, RegisterRequestDTO>().ReverseMap().ReverseMap();
+    
+        
     }
 }

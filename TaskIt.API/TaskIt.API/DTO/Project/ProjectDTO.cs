@@ -1,7 +1,5 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using TaskIt.API.Core.Enums;
-using TaskIt.API.DTO.Ticket;
-using TaskIt.API.Models;
 
 namespace TaskIt.API.DTO.Project;
 
@@ -27,6 +25,8 @@ public record ProjectDTO
     public DateTime? DateClosed { get; set; }
 
     public DateTime? DateCreated { get; set; }
+
+    public DateTime? LastModified { get; set; }
 
     public IEnumerable<ProjectTicketsDTO>? Tickets { get; set; }
 

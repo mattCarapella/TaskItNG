@@ -1,16 +1,54 @@
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Cors;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using TaskIt.API.Core.Middleware;
+using TaskIt.API.Extensions;
 using TaskIt.API.Models;
+using TaskIt.API.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ??
     throw new Exception("Exception: Connection string not found.");
 
 builder.Services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(connectionString));
 
-// Add services to the container.
+
+builder.Services.AddIdentity<ApiUser, IdentityRole>(options =>
+{
+    options.Password.RequireDigit = true;
+    options.Password.RequireLowercase = true;
+    options.Password.RequireUppercase = true;
+    options.Password.RequireNonAlphanumeric = true;
+    options.Password.RequiredLength = 8;
+}).AddEntityFrameworkStores<ApplicationDbContext>();
+
+
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultForbidScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultSignInScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultSignOutScheme = JwtBearerDefaults.AuthenticationScheme;
+}).AddJwtBearer(options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidIssuer = builder.Configuration["JWT:Issuer"],
+        ValidateAudience = true,
+        ValidAudience = builder.Configuration["JWT:Audience"],
+        ValidateIssuerSigningKey = true,
+        IssuerSigningKey = new SymmetricSecurityKey(System.Text.Encoding.UTF8.GetBytes(builder.Configuration["JWT:SigningKey"]))
+    };
+});
+
 
 builder.Services.AddControllers(options =>
 {
@@ -40,11 +78,15 @@ builder.Services.AddControllers(options =>
 })
 .AddNewtonsoftJson(options => options.SerializerSettings.ReferenceLoopHandling = Newtonsoft.Json.ReferenceLoopHandling.Ignore);
 
+
 builder.Services.AddEndpointsApiExplorer();
+
 
 builder.Services.AddSwaggerGen();
 
+
 builder.Services.AddAutoMapper(typeof(Program).Assembly);
+
 
 builder.Services.AddCors(options =>
 {
@@ -60,6 +102,7 @@ builder.Services.AddCors(options =>
     });
 });
 
+
 // Middleware to add server-side response caching (must also include app.UseResponseCaching() after app.UseCors() below).
 builder.Services.AddResponseCaching(options =>
 {
@@ -71,6 +114,9 @@ builder.Services.AddResponseCaching(options =>
 
 // Middleware to add in-memory caching.
 builder.Services.AddMemoryCache();
+
+
+builder.Services.AddScoped<ErrorService>();
 
 
 var app = builder.Build();
@@ -94,13 +140,21 @@ else
     app.UseExceptionHandler("/error");
 }
 
+
 app.UseHttpsRedirection();
+
 
 app.UseCors();
 
+
 app.UseResponseCaching();
 
+
+app.UseAuthentication();
+
+
 app.UseAuthorization();
+
 
 app.Use((context, next) =>
 {
@@ -113,8 +167,12 @@ app.Use((context, next) =>
 });
 
 
-// Minimal API routing
+// Global exception handling
+//app.UseMiddleware<GlobalExceptionMiddleware>();
+app.UseExceptionHandler(exceptionHandlerApp => exceptionHandlerApp.ConfigureExtensionHandler());
 
+
+// Minimal API routing
 app.MapGet("/error",
     [EnableCors("AnyOrigin")]
     [ResponseCache(NoStore = true)]
@@ -133,6 +191,7 @@ app.MapGet("/cod/test",
                        "Client time (UTC): ' + new Date().toISOString());</script>" +
                        "<noscript>Your client does not support JavaScript</noscript>",
                        "text/html"));
+
 
 app.MapControllers()
     .RequireCors("AnyOrigin");

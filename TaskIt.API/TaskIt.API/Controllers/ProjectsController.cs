@@ -1,14 +1,14 @@
 ﻿using AutoMapper;
-using Azure.Core;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
-using System;
+using System.Diagnostics;
 using System.Linq.Dynamic.Core;
 using System.Text.Json;
 using TaskIt.API.DTO;
 using TaskIt.API.DTO.Project;
 using TaskIt.API.Models;
+using TaskIt.API.Services;
 
 namespace TaskIt.API.Controllers;
 
@@ -16,19 +16,22 @@ namespace TaskIt.API.Controllers;
 [ApiController]
 public class ProjectsController : ControllerBase
 {
-    private readonly ILogger<ProjectsController> _logger;
     private readonly IMapper _mapper;
     private readonly IMemoryCache _memoryCache;
+    private readonly ILogger<ProjectsController> _logger;
+    private readonly ErrorService _errorService;
     private readonly ApplicationDbContext _context;
 
-    public ProjectsController(ILogger<ProjectsController> logger,
-                              IMapper mapper,
+    public ProjectsController(IMapper mapper,
                               IMemoryCache memoryCache,
+                              ILogger<ProjectsController> logger,
+                              ErrorService errorService,
                               ApplicationDbContext context)
     {
-        _logger = logger;
         _mapper = mapper;
         _memoryCache = memoryCache;
+        _logger = logger;
+        _errorService = errorService;
         _context = context;
     }
 
@@ -37,7 +40,7 @@ public class ProjectsController : ControllerBase
     /// </summary>
     [HttpGet]
     [ResponseCache(CacheProfileName = "Any-60")]
-    public async Task<ApiResultDTO<IEnumerable<ProjectListResultDTO>>> GetProjects([FromQuery] RequestDTO<ProjectListResultDTO> input)
+    public async Task<IActionResult> GetProjects([FromQuery] RequestDTO<ProjectListResultDTO> input)
     {
         IEnumerable<ProjectListResultDTO>? result = null;
         int recordCount = 0;
@@ -48,55 +51,54 @@ public class ProjectsController : ControllerBase
         {
             // If the key is not found, query the db and store the result in the cache for 30 seconds.
             var query = _context.Projects.AsQueryable();
-        
-            // Filter by search term
+
+            // Filter and paginate the result.
             if (!string.IsNullOrEmpty(input.FilterQuery))
                 query = query.Where(p => p.Name.Contains(input.FilterQuery));
-
-            // Filter by Status and Priority
             if (input.Status.HasValue)
                 query = query.Where(p => p.Status == input.Status);
             if (input.Priority.HasValue)
                 query = query.Where(p => p.Priority == input.Priority);
 
-            // Pagination
             query = query.OrderBy($"{input.SortColumn} {input.SortOrder}")
-                         .Skip(input.PageIndex * input.PageSize)
-                         .Take(input.PageSize);
-            
+                            .Skip(input.PageIndex * input.PageSize)
+                            .Take(input.PageSize);
+
             recordCount = await query.CountAsync();
 
-            result = await (from p in query select new ProjectListResultDTO() {
-                         Id = p.Id,
-                         Name = p.Name,
-                         Description = p.Description,
-                         Archived = p.Archived,
-                         Flagged = p.Flagged,
-                         Status = p.Status,
-                         Priority = p.Priority,
-                         GoalDate = p.GoalDate,
-                         DateClosed = p.DateClosed,
-                         DateCreated = p.DateCreated,
-                         TicketCount = p.Tickets!.Count()
-                     }).ToListAsync();
-            
+            result = await (from p in query
+                            select new ProjectListResultDTO()
+                            {
+                                Id = p.Id,
+                                Name = p.Name,
+                                Description = p.Description,
+                                Archived = p.Archived,
+                                Flagged = p.Flagged,
+                                Status = p.Status,
+                                Priority = p.Priority,
+                                GoalDate = p.GoalDate,
+                                DateClosed = p.DateClosed,
+                                DateCreated = p.DateCreated,
+                                TicketCount = p.Tickets!.Count()
+                            }).ToListAsync();
+
             _memoryCache.Set(cacheKey, result, new TimeSpan(0, 0, 10));
         }
 
-        //if (result is null) result = new List<ProjectListResultDTO>();
-
-        return new ApiResultDTO<IEnumerable<ProjectListResultDTO>>()
+        var response = new ApiResultDTO<IEnumerable<ProjectListResultDTO>>()
         {
             Data = result!,
             PageIndex = input.PageIndex,
             PageSize = input.PageSize,
-            TotalPages  = (int)Math.Ceiling(recordCount / (double)input.PageSize),
+            TotalPages = (int)Math.Ceiling(recordCount / (double)input.PageSize),
             RecordCount = recordCount,
-            Links = new List<LinkDTO> 
+            Links = new List<LinkDTO>
             {
                 new LinkDTO(Url.Action(null, "Projects", new { input.PageIndex, input.PageSize } , Request.Scheme)!, "self", "GET")
             }
         };
+
+        return Ok(response);
     }
 
 
@@ -114,39 +116,46 @@ public class ProjectsController : ControllerBase
         if (!_memoryCache.TryGetValue<ProjectDTO>(cacheKey, out result))
         {
             // If the key is not found, query the db and store the result in the cache for 30 seconds.
-            result = await _context.Projects
-                                   .Select(p => new ProjectDTO()
-                                   {
-                                       Id = p.Id,
-                                       Name = p.Name,
-                                       Description = p.Description,
-                                       Archived = p.Archived,
-                                       Flagged = p.Flagged,
-                                       Status = p.Status,
-                                       Priority = p.Priority,
-                                       GoalDate = p.GoalDate,
-                                       DateClosed = p.DateClosed,
-                                       DateCreated = p.DateCreated,
-                                       Tickets = p.Tickets!.Select(t => new ProjectTicketsDTO()
-                                       {
-                                           Id = t.Id,
-                                           Title = t.Title,
-                                           DateCreated = t.DateCreated,
-                                           GoalDate = t.GoalDate,
-                                           Priority = t.Priority
-                                       }),
-                                       Notes = p.Notes!.Select(n => new ProjectNotesDTO()
-                                       {
-                                           Id = n.Id,
-                                           Title = n.Title,
-                                           Content = n.Content
-                                       })
-                                   }).SingleOrDefaultAsync(p => p.Id == id);
+            var project = await _context.Projects.Where(p => p.Id == id)
+                                                .Include(p => p.Tickets)
+                                                .Include(p => p.Notes)
+                                                .FirstOrDefaultAsync();
 
+            if (project is null)
+            {
+                _errorService.LogError("Could not process request on machine {Machine}. TraceId: {TraceId}", Environment.MachineName, Activity.Current?.Id);
+                _errorService.LogError($"Item with ID {id} was not found.");
+                return _errorService.NotFoundProblemDetails(id);
+            }
 
-            if (result is null) return NotFound();
+            result = new ProjectDTO()
+            {
+                Id = project.Id,
+                Name = project.Name,
+                Description = project.Description,
+                Archived = project.Archived,
+                Flagged = project.Flagged,
+                Status = project.Status,
+                Priority = project.Priority,
+                GoalDate = project.GoalDate,
+                DateClosed = project.DateClosed,
+                DateCreated = project.DateCreated,
+                Tickets = project.Tickets!.Select(t => new ProjectTicketsDTO()
+                {
+                    Id = t.Id,
+                    Title = t.Title,
+                    DateCreated = t.DateCreated,
+                    GoalDate = t.GoalDate,
+                    Priority = t.Priority
+                }),
+                Notes = project.Notes!.Select(n => new ProjectNotesDTO()
+                {
+                    Id = n.Id,
+                    Title = n.Title,
+                    Content = n.Content
+                })
+            };
 
-            // Cache the result.
             _memoryCache.Set(cacheKey, result, new TimeSpan(0, 0, 30));
         }
 
@@ -175,14 +184,22 @@ public class ProjectsController : ControllerBase
     [ResponseCache(NoStore = true)]
     public async Task<IActionResult> Create([FromBody] ProjectCreateDTO model)
     {
-        if (!ModelState.IsValid) return BadRequest(ModelState);
+        if (model is null || !ModelState.IsValid)
+        {
+            _errorService.LogError("Could not proceess request on machine {Machine}. TraceId: {TraceId}", Environment.MachineName, Activity.Current?.Id);
+            _errorService.LogError("Invalid model state.");
+            return _errorService.InvalidModelProblemDetails();
+        }
 
         // Check if a project with the same name already exists.
-        var proj = await _context.Projects.Where(p => p.Name.Trim().ToLower() == model.Name!.TrimEnd().ToLower()).FirstOrDefaultAsync();
+        var proj = await _context.Projects.Where(p => p.Name.Trim().ToLower() == model!.Name.TrimEnd().ToLower())
+                                          .FirstOrDefaultAsync();
+
         if (proj is not null)
         {
-            ModelState.AddModelError("", "A project with this name already exists.");
-            return StatusCode(422, ModelState);
+            _errorService.LogError("Could not proceess request on machine {Machine}. TraceId: {TraceId}", Environment.MachineName, Activity.Current?.Id);
+            _errorService.LogError($"Project with name \"{model.Name}\" already exists.");
+            return _errorService.InvalidNameProblemDetails(model.Name);
         }
 
         // If it doesn't, create a new project and update the db.
@@ -198,10 +215,7 @@ public class ProjectsController : ControllerBase
         var result = await _context.SaveChangesAsync() > 0;
 
         if (!result)
-        {
-            ModelState.AddModelError("", "Something went wrong when attempting to create this project.");
-            return StatusCode(500, ModelState);
-        }
+            throw new InvalidOperationException("Something went wrong when attempting to create this project.");
 
         var newProjectDTO = _mapper.Map<ProjectDTO>(newProject);
 
@@ -227,47 +241,55 @@ public class ProjectsController : ControllerBase
     [ResponseCache(NoStore = true)]
     public async Task<IActionResult> Update([FromBody] ProjectUpdateDTO model)
     {
-        if (!ModelState.IsValid) return BadRequest(ModelState);
+        if (model is null || !ModelState.IsValid)
+        {
+            _errorService.LogError("Could not proceess request on machine {Machine}. TraceId: {TraceId}", Environment.MachineName, Activity.Current?.Id);
+            _errorService.LogError("Invalid model state.");
+            return _errorService.InvalidModelProblemDetails();
+        }
 
         // Make sure the project being updated exists.
-        var project = await _context.Projects.Where(p => p.Id == model.Id).FirstOrDefaultAsync();
+        var project = await _context.Projects.Where(p => p.Id == model!.Id).FirstOrDefaultAsync();
+
         if (project is null)
         {
-            ModelState.AddModelError("", $"Project with Id {model.Id} was not found.");
-            return StatusCode(404, ModelState);
+            _errorService.LogError("Could not process request on machine {Machine}. TraceId: {TraceId}", Environment.MachineName, Activity.Current?.Id);
+            _errorService.LogError($"Item with ID {model.Id} was not found.");
+            return _errorService.NotFoundProblemDetails(model.Id);
         }
 
         // If it does, update the properties and save the changes.
-        if (!string.IsNullOrEmpty(model.Name))
+        if (!string.IsNullOrEmpty(model!.Name))
             project.Name = model.Name;
-        if (!string.IsNullOrEmpty (model.Description))
+        if (!string.IsNullOrEmpty(model.Description))
             project.Description = model.Description;
         if (model.Archived.HasValue)
             project.Archived = model.Archived.Value;
         if (model.Flagged.HasValue)
             project.Flagged = model.Flagged.Value;
-        if (model.Status.HasValue) 
+        if (model.Status.HasValue)
             project.Status = model.Status.Value;
         if (model.Priority.HasValue)
             project.Priority = model.Priority.Value;
         if (model.GoalDate.HasValue)
             project.GoalDate = model.GoalDate.Value;
         if (model.DateClosed.HasValue)
-            project.DateClosed = model.DateClosed.Value;
-        project.LastModified = DateTime.Now;
+            project!.DateClosed = model.DateClosed.Value;
+        project!.LastModified = DateTime.Now;
 
         _context.Projects.Update(project);
         var result = await _context.SaveChangesAsync() > 0;
 
         if (!result)
         {
-            ModelState.AddModelError("", "Something went wrong when attempting to update this project.");
-            return StatusCode(500, ModelState);
+            throw new InvalidOperationException("Something went wrong when attempting to update this project.");
         }
 
-        var response = new ApiResultDTO<Project?>()
+        var projectDTO = _mapper.Map<ProjectDTO>(project);
+
+        var response = new ApiResultDTO<ProjectDTO?>()
         {
-            Data = project,
+            Data = projectDTO,
             Links = new List<LinkDTO>()
             {
                 new LinkDTO(Url.Action(null, "Projects", model, Request.Scheme)!, "self", "PUT")
@@ -278,7 +300,6 @@ public class ProjectsController : ControllerBase
         return Ok(response);
     }
 
-
     /// <summary>
     /// Delete a Project entity with given Id.
     /// </summary>
@@ -288,10 +309,12 @@ public class ProjectsController : ControllerBase
     {
         // Make sure the project to be deleted exists.
         var project = await _context.Projects.Where(p => p.Id == id).FirstOrDefaultAsync();
+        
         if (project is null)
         {
-            ModelState.AddModelError("", $"Project with Id {id} was not found.");
-            return StatusCode(404, ModelState);
+            _errorService.LogError("Could not process request on machine {Machine}. TraceId: {TraceId}", Environment.MachineName, Activity.Current?.Id);
+            _errorService.LogError($"Item with ID {id} was not found.");
+            return _errorService.NotFoundProblemDetails(id);
         }
 
         // If it does, delete it and update the db.
@@ -300,8 +323,7 @@ public class ProjectsController : ControllerBase
 
         if (!result)
         {
-            ModelState.AddModelError("", "Something went wrong when attempting to delete this project.");
-            return StatusCode(500, ModelState);
+            throw new InvalidOperationException("Something went wrong when attempting to delete this project.");
         }
 
         var response = new ApiResultDTO<Project?>()
@@ -316,7 +338,6 @@ public class ProjectsController : ControllerBase
 
         return Ok(response);
     }
-
 }
 
 
@@ -438,3 +459,38 @@ public class ProjectsController : ControllerBase
 
 //    return Ok(response);
 //}
+
+
+
+
+// From GET Project
+
+// If the key is not found, query the db and store the result in the cache for 30 seconds.
+//result = await _context.Projects
+//                       .Select(p => new ProjectDTO()
+//                       {
+//                           Id = p.Id,
+//                           Name = p.Name,
+//                           Description = p.Description,
+//                           Archived = p.Archived,
+//                           Flagged = p.Flagged,
+//                           Status = p.Status,
+//                           Priority = p.Priority,
+//                           GoalDate = p.GoalDate,
+//                           DateClosed = p.DateClosed,
+//                           DateCreated = p.DateCreated,
+//                           Tickets = p.Tickets!.Select(t => new ProjectTicketsDTO()
+//                           {
+//                               Id = t.Id,
+//                               Title = t.Title,
+//                               DateCreated = t.DateCreated,
+//                               GoalDate = t.GoalDate,
+//                               Priority = t.Priority
+//                           }),
+//                           Notes = p.Notes!.Select(n => new ProjectNotesDTO()
+//                           {
+//                               Id = n.Id,
+//                               Title = n.Title,
+//                               Content = n.Content
+//                           })
+//                       }).SingleOrDefaultAsync(p => p.Id == id);
